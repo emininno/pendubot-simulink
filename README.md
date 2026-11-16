@@ -1,86 +1,145 @@
-# BONK / Ar2Y — Market-Data Signal Assessment
+# pendubot-simulink
 
-**Status:** Preliminary technical assessment (Phase A)  
-**Scope:** Historical data processing and trading-decision analysis; no live trading or Rust deployment.  
-**Confidential:** Project materials and the reference wallet identity must remain within the authorized team.
+Simulink simulation of a **Pendubot**: a planar two-link pendulum with an actuated base joint (`q1`, driven by a torque `tau`) and a passive elbow joint (`q2`). The controller swings the pendulum up from the hanging position with **energy pumping** and then **balances it upside down with LQR**. It can also bring the pendulum back down and stop it.
 
-## 1. Problem
+The model is sized for a realistic wall-mounted DIY build (1.8 m overall diameter) driven by a compact quasi-direct-drive actuator. Torque limits, encoder quantization and velocity estimation are modeled, so what you see in simulation is a reasonable preview of the real hardware.
 
-**BONK** is an already-profitable trading bot operating on tokens that migrate from **pump.fun** bonding curves to **PumpSwap**. A reference bot, **Ar2Y**, reportedly performs better under broadly comparable conditions. We want to determine whether the observable market-data stream contains **additional signals, features, or decision rules** that BONK does not currently exploit.
+![animation](docs/animation.gif)
 
-This is **not** a copy-trading project. Acting after Ar2Y's published buy/sell transactions loses the advantage to latency and execution costs. Ar2Y's trades are evidence to investigate, not signals to follow mechanically.
+---
 
-**Market universe:** PumpSwap token/SOL pools created by pump.fun migration (`poolCreatedBy = pump`); exclude manually created (`custom`) pools. The relevant trades typically enter seconds to minutes after migration and exit on a short horizon.
+## Quick start
 
-We assume comparable operating conditions for the initial study, but must verify this before attributing performance differences to decision logic.
+1. Open MATLAB and `cd` into the repository folder.
+2. Open the Simulink model (`pendubot.slx`).
+3. Press **Run**.
 
-## 2. Reference observations (provided, not independently verified)
+That's it. The model's `InitFcn` callback runs `params_pendolo.m` automatically, so all parameters, the LQR gain and the encoder settings are loaded before every run. The `StartFcn` callback runs `clear drawPendulum`, which resets the animation state. A figure window shows the pendulum while the simulation runs. A circular gauge around the base joint shows the applied torque: the sector grows counter-clockwise for positive torque and clockwise for negative torque, and turns from green to red as it approaches full scale.
 
-Reference wallet: `Ar2Y6o1QmrRAskjii1cRfijeKugHH13ycxW5cd7rro1x`
+To record the animation as a GIF, set `recordGif = true` at the top of `drawPendulum.m`. The file is written to `docs/animation.gif`. Compress it before committing (e.g. `gifsicle -O3 --colors 64 --resize-width 600 --lossy=60`).
 
-For **3–13 October 2026**, the supplied analysis of on-chain balances reports:
+To switch between the **upright** and **hanging** targets during a run, double-click the *Manual Switch* that feeds the `target` input of the controller (1 = up, 0 = down).
 
-| Metric | Reported value |
-| --- | --- |
-| Completed buy/sell cycles | ~1,700/day |
-| Median trade size | ~1.6 SOL |
-| Mean ROI per cycle | +1.05% (+1.26% size-weighted) |
-| Median daily PnL | ~+41 SOL; 9 positive days out of 11 |
-| Median holding period | 47 seconds (middle half: ~14 seconds to 7 minutes) |
+> Tip: enable *Run → Simulation Pacing* to watch the animation in real time.
 
-The source also reports **+2.2% mean ROI** for individually verified September cycles. Delayed imitation of Ar2Y trades reportedly loses ~4% per trade.
+## Requirements
 
-These values describe **Ar2Y**, not BONK; a comparable BONK decision/trade/PnL baseline has not yet been supplied.
+| Product | Needed for |
+|---|---|
+| MATLAB + Simulink | everything |
+| **Control System Toolbox** | **required**: `lqr()` is called in `params_pendolo.m` to compute the balancing gain `K` and the Riccati matrix `P`. The simulation cannot start without it. |
+| Symbolic Math Toolbox | optional, only for `derive_pendolo.m` (symbolic derivation of the model) |
 
-## 3. Available data and code
+---
 
-- **Historical replay:** PumpAPI hourly compressed JSONL files: `https://replay.pumpapi.io/YYYY/MM/DD/HH.jsonl.zst`. Example daily index: `https://replay.pumpapi.io/2026/10/10/`.
-- **Volume:** approximately 14 GB/day compressed, according to the supplied notes. `curl` worked for the original team; their `urllib` requests returned HTTP 403.
-- **Coverage analyzed:** 3 October 00:00 through 13 October 13:00 UTC, 2026; the supplied CatBoost experiment uses **10, 11 and 12 October only**.
-- **Event fields:** signature, signer, mint, amounts, pool/virtual reserves, price, pool fee, before/after balances, address lookup tables, program usage and millisecond timestamps.
-- **Ar2Y cycles:** `dati/ar2y_cicli_sol_0310_1310.parquet` (included in the supplied archive), with entry/exit times, market-cap values, SOL in/out, ROI, etc.
+## Conventions
 
-Supplied Python pipeline (under `codice/` in the source archive):
+- `q1`: absolute angle of link 1, measured from the **downward vertical**, counter-clockwise positive.
+- `q2`: angle of link 2 **relative to link 1**.
+- State: `x = [q1; q2; dq1; dq2]`.
+- Hanging equilibrium: `q1 = 0, q2 = 0`. Upright target: `q1 = pi, q2 = 0`.
+- Potential energy is zero at the base joint, with the y axis pointing up. The upright rest energy is `Etop = (m1*lc1 + m2*(L1 + lc2))*g`.
 
-| Script | Purpose |
-| --- | --- |
-| `01_download.py` | Download hourly replays |
-| `02_slim.py` | Convert selected pump.fun/PumpSwap events to Parquet |
-| `02_ar2y_rows.py` | Extract Ar2Y-related transaction rows |
-| `04_ar2y_cycles.py` | Reconstruct buy/sell cycles from on-chain balances |
-| `04_ar2y_ablation_ds.py` | Build per-token, per-second decision samples and features; label whether Ar2Y buys within 15 seconds |
-| `05_ar2y_ablation_train.py` | Train/evaluate a CatBoost Ar2Y-entry classifier |
+## Model structure
 
-The supplied code uses machine-specific data paths that will need configuring before reproduction. The intermediate model-training Parquet files are **not** included; the full replay can be downloaded if needed. See the model results in `codice/05_ar2y_ablation_train.txt`.
+```
+target ──► [control] ──tau──► [dinamica] ──xdot──► [Integrator] ──x──┬──► [animazione]
+              ▲                    ▲                                 │
+              │                    └──────────── x ──────────────────┤
+              └──────── xm ◄── [encoder] ◄───────────────────────────┘
+```
 
-## 4. Existing research baseline — useful but insufficient
+| Block / file | Role |
+|---|---|
+| `dinamica` (MATLAB Function) | Nonlinear dynamics `M(q)·ddq + C(q,dq) + G(q) + F(dq) = [tau; 0]`. Outputs `xdot` and the total energy `E` (for diagnostics). This is the "physical pendulum". |
+| Integrator | Integrates `xdot`, initial condition `x0`. |
+| `encoder` (MATLAB Function, Ts = 1 ms) | Quantized encoder readings and velocity estimation (finite difference + first-order low-pass filter). The controller only sees this **measured** state. |
+| `control` (MATLAB Function, Ts = 1 ms) | Swing-up, balancing and descent logic (see below). |
+| `animazione` (MATLAB Function) + `drawPendulum.m` | Live animation with torque gauge and optional GIF recording. Graphics run as an extrinsic MATLAB function. Inputs: `q1, q2, L1, W1, L2, W2, tau, tauMax`. |
+| `params_pendolo.m` | Physical parameters, LQR design, controller and encoder settings. |
+| `derive_pendolo.m` | Symbolic derivation of energy, `M`, `C`, `G` and the linearization from the geometry alone. Generates `pend_*.m` functions. Useful to validate or extend the model. |
 
-The **CatBoost model is a research baseline for predicting Ar2Y entries**, **not** the production BONK strategy or its economic baseline.
+The plant (`dinamica`) and the controller (`control`) intentionally compute the energy **independently**. The controller works only from measured angles and its own model parameters, as it would on real hardware. This makes it easy to test model mismatch: give the controller a parameter vector that differs from the plant's.
 
-- It evaluates **43 base** and **39 additional** features; first entries and re-entries are considered separately.
-- The model reports AUC around **0.93–0.96** for first-entry / combined classifications (re-entry AUC is around **0.81–0.82**).
-- Despite recognizing broad entry conditions, the reported precision and recall do **not** satisfy the stated operational target of **at least 40% precision at 30% recall**.
-- Direct prediction of the team's own trading outcomes, using hand-built indicators, a transformer and automatically generated indicators, reportedly achieved weak rank correlations (~0.15–0.25), insufficient after costs.
+---
 
-**Methodology to check before reuse:** the three-day cross-validation trains on the other two days (not a strictly forward-only test), and some operating thresholds are identified using labels from the evaluated fold. Performance per decision row must also be distinguished from performance per distinct actionable signal and from net trading PnL.
+## Control strategy
 
-A high classification AUC is **not** evidence of a profitable improvement to BONK.
+### 1. Swing-up: energy pumping
+Away from the upright position, the controller regulates the total mechanical energy `E` to the upright rest energy `Etop`:
 
-## 5. Existing execution-cost assumptions
+```
+tau = sat( kE * (Etop - E) * dq1 ,  ±tau_sw )
+```
 
-The supplied backtest approximation, calibrated by the original team against actual fills, uses:
+Since `dE/dt = dq1 * tau` (minus friction), this law always pushes in the direction of motion while `E < Etop` and brakes when `E > Etop`. The swing-up torque limit `tau_sw` is deliberately set **below** the static torque needed to hold the links horizontal. The motor therefore cannot lift the pendulum directly: it has to pump energy over several swings, like a child on a swing.
 
-- **Execution price:** last observed print at or before **decision time +150 ms**, on both entry and exit; never select the best price in a future window.
-- **Fees:** 1.25% per side (`poolFeeRate`) plus **0.00113 SOL per completed cycle**.
-- **Price impact:** constant-product approximation with effective SOL reserve `Q = quoteInPool + virtualQuoteInPool`; buy multiplier `1 + size/Q`, sell multiplier `Q/(Q + value_sold)`.
-- **Position rule:** at most one open position per token; re-entry is allowed after exit.
+### 2. Balancing: LQR
+The model is linearized about `[pi, 0, 0, 0]` and an LQR gain is computed with `Q = diag(10, 10, 1, 1)`, `R = 1`:
 
-For an approximately **100 SOL** effective reserve just after migration, the source estimates round-trip friction of ~**3.5% at 0.3 SOL** and ~**4.6% at 1 SOL**, before any adverse move during the delay. These are **source assumptions**, not independently verified economics; validate against BONK's real executions.
+```
+tau = sat( -K * e ,  ±tau_lqr ),   e = [wrap(q1 - pi); wrap(q2); dq1; dq2]
+```
 
-## 6. Approach and current boundary
+### 3. Switching
+The controller switches to LQR when the state enters the estimated region of attraction, measured by the LQR cost-to-go `V = e'·P·e < Vin`. It falls back to swing-up when `V > Vout`. The hysteresis prevents chattering at the boundary.
 
-**Phase A — Assess before committing:** confirm the actual comparison, review inputs and prior tests, identify missing evidence, perform at most a narrowly time-boxed offline feasibility check, and decide whether deeper research is justified. **See [`TECH_PLAN.md`](TECH_PLAN.md) for the short actionable checklist and material requests.**
+### 4. Descent
+With `target = 0` the LQR is disabled and a saturated PD on `q1` brings the pendulum down and damps it. Pure energy removal is not used here: with a large energy error it acts as a stiff brake on joint 1 and traps the energy in the spinning second link.
 
-**Phase B — Research only after authorization:** investigate candidate market-stream features and decision rules, validate chronologically out-of-sample against **BONK's own net-PnL baseline**, and only then consider integration with the team's Rust execution system.
+---
 
-**Immediate next step:** complete the requests and minimal audit in `TECH_PLAN.md`. Do not start large downloads, a broad model-search campaign or a production implementation yet.
+## Reference hardware
+
+| Item | Value |
+|---|---|
+| Link lengths | `L1 = 0.50 m`, `L2 = 0.40 m` (1.8 m overall diameter) |
+| Links | aluminium square tube 30×30 mm or hardwood 30×30 mm, conservative linear mass 0.7–0.9 kg/m |
+| Elbow mass | 0.15 kg (bearing, hub, encoder) |
+| Actuator | CubeMars **AK80-6** (6:1 planetary QDD, 6 N·m rated / 12 N·m peak, integrated driver and 14-bit encoder, CAN) |
+| Elbow encoder | 14-bit magnetic encoder (e.g. AS5047P) |
+| Control rate | 1 kHz |
+
+Static torque to hold link 1 horizontal (link 2 hanging) is about 3–3.6 N·m depending on link mass. The swing-up limit is 2 N·m. Balancing may use the actuator peak (12 N·m), but in steady state the torque stays close to zero.
+
+## Tuning parameters (`params_pendolo.m`)
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `kE` | 5 | energy pumping gain |
+| `tau_sw` | 2 N·m | torque limit during swing-up |
+| `tau_lqr` | 12 N·m | torque limit during balancing (actuator peak) |
+| `Vin`, `Vout` | 20, 60 | LQR switching thresholds on `e'·P·e` |
+| `kp_dn`, `kd_dn` | 2, 1 | PD gains for the descent |
+| `fc_vel` | 30 Hz | velocity filter cutoff |
+| `Q`, `R` | `diag(10,10,1,1)`, 1 | LQR weights |
+
+## Validation checks
+
+- **Energy conservation**: with `tau = 0` and zero friction, `E` must stay constant (variations of the order of solver tolerance).
+- **Dissipation**: with friction, `E` must decrease monotonically and the pendulum must settle hanging.
+- **Robustness**: swing-up and capture keep working with ±20 % mass variations, severe torque saturation, encoder quantization and random initial states.
+
+## Known limitations and ideas
+
+- No CAN latency or dropped frames yet (add a *Unit Delay* between `encoder` and `control`).
+- No gearbox backlash or Coulomb friction.
+- An encoder zero offset produces a bent equilibrium (about 5.5° of link 1 tilt per 1° of `q2` offset), because the Pendubot has a continuum of equilibria with link 2 vertical. Integral action would remove it.
+- Motor electrical dynamics are not modeled. The driver's current loop is assumed much faster than the mechanics.
+
+## Hardware safety notes
+
+A 1.8 m pendulum spinning at several hundred rpm is dangerous. If you build it: keep a clear radius, add a hardware emergency stop that cuts motor power, add a watchdog that zeroes the torque on control-loop or CAN timeouts, use a slip ring for the elbow encoder wiring, and plan for regenerative braking energy on the supply bus.
+
+---
+
+## References
+
+- M. W. Spong, D. J. Block, *The Pendubot: a mechatronic system for control research and education*, Proc. 34th IEEE Conference on Decision and Control, 1995.
+- K. J. Åström, K. Furuta, *Swinging up a pendulum by energy control*, Automatica, 36(2), 2000.
+- I. Fantoni, R. Lozano, M. W. Spong, *Energy based control of the Pendubot*, IEEE Transactions on Automatic Control, 45(4), 2000.
+- F. Wiebe et al., *Open Source Dual-Purpose Acrobot and Pendubot Platform: Benchmarking Control Algorithms for Underactuated Robotics*, IEEE Robotics and Automation Magazine, 31(2), 2024.
+
+## License
+
+Released into the public domain under [The Unlicense](LICENSE). Do whatever you want with it.
