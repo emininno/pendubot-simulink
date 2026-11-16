@@ -27,8 +27,8 @@ A = [zeros(2) eye(2); -M0\dG, -M0\diag([b1 b2])];
 B = [0; 0; M0\[1; 0]];
 [K, P] = lqr(A, B, diag([10 10 1 1]), 1);
 % --- Control ---
-kE      = 5;      % energy pumping gain
-tau_sw  = 2;      % swing-up torque limit [N m] (< static torque ~3.6 N m)
+kE      = 3.5;      % energy pumping gain
+tau_sw  = 3;      % swing-up torque limit [N m] (< static torque ~3.6 N m)
 tau_lqr = 12;     % balancing torque limit = AK80-6 peak [N m]
 Vin = 20;  Vout = 60;           % LQR switching thresholds on e'*P*e
 kp_dn = 2;  kd_dn = 1;          % PD gains for the return to the bottom
